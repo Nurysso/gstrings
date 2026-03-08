@@ -1,4 +1,3 @@
-// module github.com/nurysso/gstrings
-module gstring 
+module github.com/nurysso/gstrings
 
 go 1.25.0
