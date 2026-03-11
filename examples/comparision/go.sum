@@ -1,0 +1,8 @@
+github.com/ZiadMansourM/fstr v1.0.0 h1:Yi79COXcDU77srAF/XKzzT4lE61VRH6e5gkbl/FaP3E=
+github.com/ZiadMansourM/fstr v1.0.0/go.mod h1:MCN7fW69/9h7tHfJZGJ8GisbilK8CtTIQ4P8sth6/4g=
+github.com/nurysso/gstrings v0.0.0-20260311065121-300a271260dd h1:5xR0RnPWN6Ljtf+1yBLgZyErput7s+fm3Lmae/ytlEk=
+github.com/nurysso/gstrings v0.0.0-20260311065121-300a271260dd/go.mod h1:bGrrsqRss1vEKKGrURywDbCzSy5Crhk+T0NeFDHrteY=
+github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f h1:Z2cODYsUxQPofhpYRMQVwWz4yUVpHF+vPi+eUdruUYI=
+github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f/go.mod h1:JqzWyvTuI2X4+9wOHmKSQCYxybB/8j6Ko43qVmXDuZg=
+github.com/wissance/stringFormatter v1.6.1 h1:Pf5m2lMi1z256+SgWLj+u4SGqSzix0HP0Z0t4QgMM2I=
+github.com/wissance/stringFormatter v1.6.1/go.mod h1:H7Mz15+5i8ypmv6bLknM/uD+U1teUW99PlW0DNCNscA=

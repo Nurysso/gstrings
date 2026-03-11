@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"gstring"
+	"github.com/nurysso/gstrings"
 )
 
 type User struct {
@@ -14,8 +14,8 @@ type User struct {
 
 func main() {
 	users := []User{
-		{1, "Alice", 1234.5, true},
-		{2, "Bob", 98.12, false},
+		{1, "Pickachu", 1234.5, true},
+		{2, "doremon", 98.12, false},
 		{3, "Charlotte", 100000.99, true},
 	}
 

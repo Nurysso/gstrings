@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"gstring"
+	"github.com/nurysso/gstrings"
 )
 
 // ─── sink vars — prevent the compiler from optimising away results ────────────

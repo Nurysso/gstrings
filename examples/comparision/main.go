@@ -1,21 +1,14 @@
-// comparison.go
-//
-// Side-by-side comparison of Go string formatting approaches:
-//   - stdlib fmt
-//   - github.com/slongfield/pyfmt   (Python .format() style, positional/named via struct/map)
-//   - github.com/ZiadMansourM/fstr  (Python f-string style, named map)
-//   - github.com/Wissance/stringFormatter (indexed {0},{1} + named map)
-//   - gstring                        (this lib)
-//
-// Run the gstring examples directly:
-//
-//	go run examples/comparison.go
 package main
 
 import (
 	"fmt"
 	"strings"
-	"gstring"
+	"time"
+
+	fstr "github.com/ZiadMansourM/fstr"
+	"github.com/nurysso/gstrings"
+	"github.com/slongfield/pyfmt"
+	sf "github.com/wissance/stringFormatter"
 )
 
 // ─── Shared data ──────────────────────────────────────────────────────────────
@@ -33,268 +26,196 @@ var users = []User{
 	{3, "Charlotte", 100000.99, true},
 }
 
+const benchIterations = 100_000
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 func divider(label string) {
 	fmt.Println()
 	fmt.Println(strings.Repeat("─", 60))
-	fmt.Println(" " + label)
+	fmt.Printf(" %s\n", label)
 	fmt.Println(strings.Repeat("─", 60))
 }
 
+func benchmarkLabel(label string, ns int64) {
+	fmt.Printf("  ⏱  %-40s %6d ns/op\n", label, ns)
+}
+
+// bench runs fn N times and returns nanoseconds per operation.
+func bench(n int, fn func()) int64 {
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		fn()
+	}
+	return time.Since(start).Nanoseconds() / int64(n)
+}
+
 // ─── 1. stdlib fmt ───────────────────────────────────────────────────────────
-//
-// The baseline. Positional verbs, powerful but opaque.
-//
-// Pros:
-//   - zero deps, built-in, compile-time vet checks
-//   - fastest — no extra allocations
-//   - full verb support (%v, %d, %f, %T, %p, etc.)
-//
-// Cons:
-//   - positional args break silently when reordered
-//   - %[n] indexed notation is hard to read at a glance
-//   - no named args — duplicate values must be passed twice
-//   - table formatting is a wall of magic numbers with no structure
 
 func exampleFmt() {
 	divider("1. stdlib fmt")
 
-	// Basic
-	fmt.Printf("Hello %s, your balance is %.2f\n", "Alice", 1234.5)
+	// Basic interpolation
+	result := fmt.Sprintf("Hello %s, your balance is %.2f", "Alice", 1234.5)
+	fmt.Println(" Basic:   ", result)
 
-	// Indexed — correct but unreadable
-	fmt.Printf("%[3]s (%[1]d) -> balance: %[2].2f\n", 1, 1234.5, "Alice")
+	// Indexed — reordered args, hard to follow at a glance
+	// args: [1]=name, [2]=id, [3]=balance
+	result = fmt.Sprintf("%[1]s (%[2]d) -> balance: %.2f", "Alice", 1, 1234.5)
+	fmt.Println(" Indexed: ", result)
 
-	// Table — cryptic width numbers, fragile to change
-	fmt.Printf("%-5s | %-12s | %12s | %-6s\n", "ID", "Name", "Balance", "Active")
-	fmt.Printf("%-5s | %-12s | %12s | %-6s\n",
+	// Table
+	fmt.Println()
+	fmt.Printf(" %-5s | %-12s | %12s | %-6s\n", "ID", "Name", "Balance", "Active")
+	fmt.Printf(" %-5s | %-12s | %12s | %-6s\n",
 		strings.Repeat("-", 5), strings.Repeat("-", 12),
 		strings.Repeat("-", 12), strings.Repeat("-", 6))
 	for _, u := range users {
-		fmt.Printf("%-5d | %-12s | %12.2f | %-6t\n", u.ID, u.Name, u.Balance, u.Active)
+		fmt.Printf(" %-5d | %-12s | %12.2f | %-6t\n", u.ID, u.Name, u.Balance, u.Active)
 	}
+
+	// Benchmarks
+	fmt.Println()
+	nsBasic := bench(benchIterations, func() {
+		_ = fmt.Sprintf("Hello %s, your balance is %.2f", "Alice", 1234.5)
+	})
+	nsFloat := bench(benchIterations, func() {
+		_ = fmt.Sprintf("%[3]s (%[1]d) -> balance: %[2].2f", 1, 1234.5, "Alice")
+	})
+	benchmarkLabel("fmt.Sprintf basic", nsBasic)
+	benchmarkLabel("fmt.Sprintf indexed float", nsFloat)
 }
 
 // ─── 2. pyfmt ────────────────────────────────────────────────────────────────
-//
-// Mimics Python's str.format(). Uses {} positional or named via struct/map.
-// Implements PEP3101 style formatting in Go.
-//
-// Pros:
-//   - named access via struct fields or map keys
-//   - supports nested field access ({user.Name})
-//   - familiar to Python developers
-//   - full fmt verb compatibility under the hood
-//
-// Cons:
-//   - panics on undefined key with Must(), error-only with Fmt()
-//   - no table/row API — just string interpolation
-//   - slower than fmt due to reflection
-//   - no alignment/padding utilities beyond what fmt provides
-//   - last commit years ago, low maintenance activity
-//
-// Example (requires: go get github.com/slongfield/pyfmt):
-//
-//	import "github.com/slongfield/pyfmt"
-//
-//	// positional
-//	pyfmt.Must("{} (id:{}) -> balance: {:.2f}", "Alice", 1, 1234.5)
-//	// => "Alice (id:1) -> balance: 1234.50"
-//
-//	// named via map
-//	pyfmt.Must("{name} -> {balance:.2f}", map[string]any{"name": "Alice", "balance": 1234.5})
-//	// => "Alice -> 1234.50"
-//
-//	// named via struct field
-//	pyfmt.Must("{Name} -> {Balance:.2f}", users[0])
-//	// => "Alice -> 1234.50"
 
 func examplePyfmt() {
-	divider("2. pyfmt — documented example (requires: go get github.com/slongfield/pyfmt)")
-	fmt.Println(`
-  // positional
-  pyfmt.Must("{} (id:{}) -> balance: {:.2f}", "Alice", 1, 1234.5)
-  // => "Alice (id:1) -> balance: 1234.50"
+	divider("2. pyfmt (github.com/slongfield/pyfmt)")
 
-  // named via map
-  pyfmt.Must("{name} -> {balance:.2f}", map[string]any{"name": "Alice", "balance": 1234.5})
-  // => "Alice -> 1234.50"
+	// Positional
+	result, _ := pyfmt.Fmt("{} (id:{}) -> balance: {:.2f}", "Alice", 1, 1234.5)
+	fmt.Println(" Positional:", result)
 
-  // named via struct fields (uses reflection)
-  pyfmt.Must("{Name} -> {Balance:.2f}", users[0])
-  // => "Alice -> 1234.50"
-	`)
+	// Named via map
+	result, _ = pyfmt.Fmt("{name} -> {balance:.2f}",
+		map[string]any{"name": "Alice", "balance": 1234.5})
+	fmt.Println(" Named map: ", result)
+
+	// Named via struct field (reflection)
+	result, _ = pyfmt.Fmt("{Name} (id:{ID}) -> {Balance:.2f}", users[0])
+	fmt.Println(" Struct:    ", result)
+
+	// Benchmarks
+	fmt.Println()
+	nsPositional := bench(benchIterations, func() {
+		_, _ = pyfmt.Fmt("{} (id:{}) -> balance: {:.2f}", "Alice", 1, 1234.5)
+	})
+	nsNamed := bench(benchIterations, func() {
+		_, _ = pyfmt.Fmt("{name} -> {balance:.2f}",
+			map[string]any{"name": "Alice", "balance": 1234.5})
+	})
+	nsStruct := bench(benchIterations, func() {
+		_, _ = pyfmt.Fmt("{Name} (id:{ID}) -> {Balance:.2f}", users[0])
+	})
+	benchmarkLabel("pyfmt positional", nsPositional)
+	benchmarkLabel("pyfmt named map", nsNamed)
+	benchmarkLabel("pyfmt struct (reflection)", nsStruct)
 }
 
 // ─── 3. fstr ─────────────────────────────────────────────────────────────────
-//
-// Closest to Python f-strings. Named map-based interpolation with {key} and
-// {key:.2f} syntax. Also supports {name=} debug output.
-//
-// Pros:
-//   - clean {key} syntax, very readable
-//   - supports {balance:,.2f} including thousands separator
-//   - {name=} debug syntax outputs "name=value"
-//   - Interpolate() returns (string, error) — safe
-//   - Eval() panics on error — quick scripts
-//
-// Cons:
-//   - map[string]interface{} only — no struct field access
-//   - no table/row API
-//   - no string utilities (Truncate, Wrap, case conversions, etc.)
-//   - ~4x slower than fmt.Sprintf for simple strings
-//   - thousands separator deviates from standard Go fmt verbs
-//
-// Benchmark from their repo:
-//
-//	BenchmarkSimpleString/fmt.Sprintf    4376912   310 ns/op    32 B/op   2 allocs
-//	BenchmarkSimpleString/fstr.Sprintf    854262  1344 ns/op   184 B/op  11 allocs
-//
-// Example (requires: go get github.com/ZiadMansourM/fstr):
-//
-//	import "github.com/ZiadMansourM/fstr"
-//
-//	fstr.Println(
-//	    "{name} (id:{id}) -> balance: {balance:.2f}",
-//	    map[string]interface{}{"id": 1, "name": "Alice", "balance": 1234.5},
-//	)
-//	// => "Alice (id:1) -> balance: 1234.50"
-//
-//	// debug syntax
-//	fstr.Eval("{name=} {balance=:.2f}", map[string]interface{}{"name": "Alice", "balance": 1234.5})
-//	// => "name=Alice balance=1234.50"
-//
-//	// thousands separator
-//	fstr.Eval("balance: {balance:,.2f}", map[string]interface{}{"balance": 123456789.64})
-//	// => "balance: 123,456,789.64"
 
 func exampleFstr() {
-	divider("3. fstr — documented example (requires: go get github.com/ZiadMansourM/fstr)")
-	fmt.Println(`
-  fstr.Println(
-      "{name} (id:{id}) -> balance: {balance:.2f}",
-      map[string]interface{}{"id": 1, "name": "Alice", "balance": 1234.5},
-  )
-  // => "Alice (id:1) -> balance: 1234.50"
+	divider("3. fstr (github.com/ZiadMansourM/fstr)")
 
-  // debug syntax — unique to fstr
-  fstr.Eval("{name=} {balance=:.2f}", map[string]interface{}{"name": "Alice", "balance": 1234.5})
-  // => "name=Alice balance=1234.50"
+	// Named map
+	result := fstr.Eval("{name} (id:{id}) -> balance: {balance:.2f}",
+		map[string]interface{}{"id": 1, "name": "Alice", "balance": 1234.5})
+	fmt.Println(" Named:     ", result)
 
-  // thousands separator — unique to fstr
-  fstr.Eval("balance: {balance:,.2f}", map[string]interface{}{"balance": 123456789.64})
-  // => "balance: 123,456,789.64"
-	`)
+	// Debug syntax — unique to fstr
+	result = fstr.Eval("{name=} {balance=:.2f}",
+		map[string]interface{}{"name": "Alice", "balance": 1234.5})
+	fmt.Println(" Debug:     ", result)
+
+	// Thousands separator — unique to fstr
+	result = fstr.Eval("balance: {balance:,.2f}",
+		map[string]interface{}{"balance": 123456789.64})
+	fmt.Println(" Thousands: ", result)
+
+	// Benchmarks
+	fmt.Println()
+	nsNamed := bench(benchIterations, func() {
+		_ = fstr.Eval("{name} (id:{id}) -> balance: {balance:.2f}",
+			map[string]interface{}{"id": 1, "name": "Alice", "balance": 1234.5})
+	})
+	nsDebug := bench(benchIterations, func() {
+		_ = fstr.Eval("{name=} {balance=:.2f}",
+			map[string]interface{}{"name": "Alice", "balance": 1234.5})
+	})
+	benchmarkLabel("fstr named map", nsNamed)
+	benchmarkLabel("fstr debug syntax", nsDebug)
 }
 
 // ─── 4. stringFormatter ──────────────────────────────────────────────────────
-//
-// Indexed {0},{1} AND named map formatting. Has MapToString, SliceToString.
-//
-// Pros:
-//   - both indexed {0} and named {key} in the same lib
-//   - FormatComplex() for named args — map[string]any
-//   - MapToString / SliceToString helpers
-//   - claims performance edge over fmt for slice printing
-//   - active development / recent commits
-//
-// Cons:
-//   - no table/row alignment API
-//   - no string utilities (Truncate, Wrap, Center, etc.)
-//   - {0:B}/{0:X}/{0:F} are custom codes, NOT Go fmt verbs
-//   - cannot mix indexed and named in a single call
-//
-// Example (requires: go get github.com/Wissance/stringFormatter):
-//
-//	import sf "github.com/Wissance/stringFormatter"
-//
-//	// indexed
-//	sf.Format("Hello {0}, balance: {1}", "Alice", 1234.5)
-//	// => "Hello Alice, balance: 1234.5"
-//
-//	// named
-//	sf.FormatComplex("{name} -> balance: {balance}", map[string]any{"name": "Alice", "balance": 1234.5})
-//	// => "Alice -> balance: 1234.5"
-//
-//	// custom format codes (NOT Go fmt verbs)
-//	sf.FormatComplex("bin:{val:B} hex:{val:X4}", map[string]any{"val": 255})
-//	// => "bin:11111111 hex:00ff"
 
 func exampleStringFormatter() {
-	divider("4. stringFormatter — documented example (requires: go get github.com/Wissance/stringFormatter)")
-	fmt.Println(`
-  // indexed
-  sf.Format("Hello {0}, balance: {1}", "Alice", 1234.5)
-  // => "Hello Alice, balance: 1234.5"
+	divider("4. stringFormatter (github.com/Wissance/stringFormatter)")
 
-  // named
-  sf.FormatComplex(
-      "{name} -> balance: {balance}",
-      map[string]any{"name": "Alice", "balance": 1234.5},
-  )
-  // => "Alice -> balance: 1234.5"
+	// Indexed
+	result := sf.Format("Hello {0}, balance: {1}", "Alice", 1234.5)
+	fmt.Println(" Indexed: ", result)
 
-  // slice helper
-  slice := []any{1, "two", 3.0}
-  sep := ", "
-  sf.SliceToString(&slice, &sep)
-  // => "1, two, 3"
+	// Named
+	result = sf.FormatComplex("{name} -> balance: {balance}",
+		map[string]any{"name": "Alice", "balance": 1234.5})
+	fmt.Println(" Named:   ", result)
 
-  // custom format codes (different from Go fmt verbs!)
-  sf.FormatComplex("bin:{val:B} hex:{val:X4}", map[string]any{"val": 255})
-  // => "bin:11111111 hex:00ff"
-	`)
+	// Slice helper
+	slice := []any{1, "two", 3.0}
+	sep := ", "
+	fmt.Println(" Slice:   ", sf.SliceToString(&slice, &sep))
+
+	// Benchmarks
+	fmt.Println()
+	nsIndexed := bench(benchIterations, func() {
+		_ = sf.Format("Hello {0}, balance: {1}", "Alice", 1234.5)
+	})
+	nsNamed := bench(benchIterations, func() {
+		_ = sf.FormatComplex("{name} -> balance: {balance}",
+			map[string]any{"name": "Alice", "balance": 1234.5})
+	})
+	benchmarkLabel("stringFormatter indexed", nsIndexed)
+	benchmarkLabel("stringFormatter named map", nsNamed)
 }
 
-// ─── 5. gstring ──────────────────────────────────────────────────────────────
-//
-// Named {key} interpolation + WithStruct + fluent Row/Table + AutoWidth + utilities.
-// Pure stdlib, zero deps, template-cached for performance.
-//
-// Pros:
-//   - named placeholders with full Go fmt verb specs {balance:.2f}
-//   - WithStruct() — interpolate directly from exported struct fields
-//   - fluent Row builder for single-line column alignment
-//   - Table builder — declare once, render many rows with ANSI colors
-//   - AutoWidth() — auto-size columns from data, no manual width counting
-//   - String utilities: Truncate, Pad, Center, Wrap, Repeat, Strip, Title, Snake, Camel
-//   - Table.String() returns table as string (useful for testing/logging)
-//   - template cache — regex runs once per unique template, zero regex on repeat calls
-//   - zero dependencies, pure stdlib under the hood
-//
-// Cons:
-//   - no {name=} debug syntax (unlike fstr)
-//   - no thousands separator (unlike fstr's {val:,.2f})
-//   - no indexed {0},{1} positional syntax (unlike pyfmt / stringFormatter)
-//   - first call on a new template has parse overhead (cached after that)
+// ─── 5. gstring ─────────────────────────────────────────────────────────────
 
-func exampleGstring() {
-	divider("5. gstring (this lib)")
+func examplegstring() {
+	divider("5. gstring (github.com/nurysso/gstring)")
 
-	// Named interpolation via With()
-	fmt.Println("── Named interpolation (With)")
+	// Named With()
+	fmt.Println(" Named interpolation (With):")
 	for _, u := range users {
 		gstring.Println(
-			"{name} (id:{id:03d}) -> balance: {balance:.2f} active:{active}",
+			"  {name} (id:{id:03d}) -> balance: {balance:.2f} active:{active}",
 			gstring.With("id", u.ID, "name", u.Name, "balance", u.Balance, "active", u.Active),
 		)
 	}
 
+	// WithStruct
 	fmt.Println()
-
-	// Named interpolation via WithStruct() — new
-	fmt.Println("── Named interpolation (WithStruct)")
+	fmt.Println(" Named interpolation (WithStruct):")
 	for _, u := range users {
 		gstring.Println(
-			"{Name} (id:{ID:03d}) -> balance: {Balance:.2f}",
+			"  {Name} (id:{ID:03d}) -> balance: {Balance:.2f}",
 			gstring.WithStruct(u),
 		)
 	}
 
-	fmt.Println()
-
 	// Row builder
-	fmt.Println("── Row builder")
+	fmt.Println()
+	fmt.Println(" Row builder:")
 	for _, u := range users {
+		fmt.Print("  ")
 		gstring.NewRow().
 			Left(u.ID, 5).Sep("|").
 			Left(u.Name, 12).Sep("|").
@@ -303,10 +224,9 @@ func exampleGstring() {
 			Print()
 	}
 
+	// Table builder
 	fmt.Println()
-
-	// Table builder with explicit widths + colors
-	fmt.Println("── Table builder (explicit widths)")
+	fmt.Println(" Table builder:")
 	t := gstring.NewTable().
 		HeaderColor(gstring.ColorCyan).
 		AltRowColor(gstring.ColorGray)
@@ -319,10 +239,9 @@ func exampleGstring() {
 		t.Row(u.ID, u.Name, u.Balance, u.Active)
 	}
 
+	// AutoWidth
 	fmt.Println()
-
-	// AutoWidth — widths computed from data, no manual counting
-	fmt.Println("── Table builder (AutoWidth — widths computed from data)")
+	fmt.Println(" Table builder (AutoWidth):")
 	t2 := gstring.NewTable().HeaderColor(gstring.ColorYellow)
 	t2.Col("ID", 0, gstring.AlignRight).
 		Col("Name", 0, gstring.AlignLeft).
@@ -338,18 +257,100 @@ func exampleGstring() {
 		t2.Row(u.ID, u.Name, u.Balance, u.Active)
 	}
 
+	// String utilities
+	fmt.Println()
+	fmt.Println(" String utilities:")
+	fmt.Printf("  Truncate:  %s\n", gstring.Truncate("Hello, World!", 8))
+	fmt.Printf("  Pad:       [%s]\n", gstring.Pad("hi", 10, '·'))
+	fmt.Printf("  Center:    [%s]\n", gstring.Center("hi", 10, '─'))
+	fmt.Printf("  Title:     %s\n", gstring.Title("hello world"))
+	fmt.Printf("  Snake:     %s\n", gstring.Snake("HelloWorld"))
+	fmt.Printf("  Camel:     %s\n", gstring.Camel("hello_world"))
+
+	// Benchmarks
 	fmt.Println()
 
-	// String utilities — none of the other libs have these
-	fmt.Println("── String utilities (unique to gstring)")
-	fmt.Printf("Truncate:  %s\n", gstring.Truncate("Hello, World!", 8))
-	fmt.Printf("Pad:       [%s]\n", gstring.Pad("hi", 10, '·'))
-	fmt.Printf("Center:    [%s]\n", gstring.Center("hi", 10, '─'))
-	fmt.Printf("Wrap:\n%s\n", gstring.Wrap("The quick brown fox jumps over the lazy dog", 20))
-	fmt.Printf("Title:     %s\n", gstring.Title("hello world"))
-	fmt.Printf("Snake:     %s\n", gstring.Snake("HelloWorld"))
-	fmt.Printf("Camel:     %s\n", gstring.Camel("hello_world"))
-	fmt.Printf("Repeat:    %s\n", gstring.Repeat("─", 40))
+	// Cold (first call, no cache)
+	nsCold := bench(1, func() {
+		_ = gstring.Sprintf(
+			"{name} (id:{id:03d}) -> balance: {balance:.2f}",
+			gstring.With("id", 1, "name", "Alice", "balance", 1234.5),
+		)
+	})
+
+	// Warm (cached template)
+	template := "{name} (id:{id:03d}) -> balance: {balance:.2f}"
+	args := gstring.With("id", 1, "name", "Alice", "balance", 1234.5)
+	_ = gstring.Sprintf(template, args) // prime cache
+	nsWarm := bench(benchIterations, func() {
+		_ = gstring.Sprintf(template, args)
+	})
+
+	nsNoPlaceholder := bench(benchIterations, func() {
+		_ = gstring.Sprintf("no placeholders here at all", gstring.With())
+	})
+
+	nsStruct := bench(benchIterations, func() {
+		_ = gstring.Sprintf("{Name} (id:{ID:03d}) -> {Balance:.2f}", gstring.WithStruct(users[0]))
+	})
+
+	benchRows := [][]any{}
+	for _, u := range users {
+		benchRows = append(benchRows, []any{u.ID, u.Name, u.Balance, u.Active})
+	}
+	nsTable := bench(benchIterations, func() {
+		tBench := gstring.NewTable()
+		tBench.Col("ID", 5, gstring.AlignRight).
+			Col("Name", 12, gstring.AlignLeft).
+			Col("Balance", 12, gstring.AlignRight, 2).
+			Col("Active", 6, gstring.AlignLeft)
+		_ = tBench.String(benchRows)
+	})
+
+	benchmarkLabel("gstring cold (first call)", nsCold)
+	benchmarkLabel("gstring warm (cached template)", nsWarm)
+	benchmarkLabel("gstring no-placeholder fast path", nsNoPlaceholder)
+	benchmarkLabel("gstring WithStruct", nsStruct)
+	benchmarkLabel("gstring table (5 rows)", nsTable)
+}
+
+// ─── Summary table ────────────────────────────────────────────────────────────
+
+func summaryTable(results map[string]int64) {
+	divider("Benchmark Summary (ns/op, lower is better)")
+
+	baseline := results["fmt_basic"]
+
+	rows := []struct {
+		label string
+		key   string
+	}{
+		{"fmt.Sprintf basic", "fmt_basic"},
+		{"fmt.Sprintf indexed", "fmt_indexed"},
+		{"pyfmt positional", "pyfmt_positional"},
+		{"pyfmt named map", "pyfmt_named"},
+		{"pyfmt struct (reflection)", "pyfmt_struct"},
+		{"fstr named map", "fstr_named"},
+		{"fstr debug syntax", "fstr_debug"},
+		{"stringFormatter indexed", "sf_indexed"},
+		{"stringFormatter named", "sf_named"},
+		{"gstring cold", "gs_cold"},
+		{"gstring warm (cached)", "gs_warm"},
+		{"gstring no-placeholder", "gs_noop"},
+		{"gstring WithStruct", "gs_struct"},
+		{"gstring table 5 rows", "gs_table"},
+	}
+
+	fmt.Printf("\n  %-38s %10s %8s\n", "Operation", "ns/op", "vs fmt")
+	fmt.Println(" ", strings.Repeat("─", 60))
+	for _, r := range rows {
+		ns, ok := results[r.key]
+		if !ok {
+			continue
+		}
+		ratio := float64(ns) / float64(baseline)
+		fmt.Printf("  %-38s %10d %7.1fx\n", r.label, ns, ratio)
+	}
 }
 
 // ─── Feature matrix ───────────────────────────────────────────────────────────
@@ -358,74 +359,123 @@ func featureMatrix() {
 	divider("Feature Matrix")
 
 	t := gstring.NewTable().HeaderColor(gstring.ColorBold)
-	t.Col("Feature", 28, gstring.AlignLeft).
-		Col("fmt", 7, gstring.AlignCenter).
-		Col("pyfmt", 7, gstring.AlignCenter).
-		Col("fstr", 7, gstring.AlignCenter).
+	t.Col("Feature", 32, gstring.AlignLeft).
+		Col("fmt", 6, gstring.AlignCenter).
+		Col("pyfmt", 6, gstring.AlignCenter).
+		Col("fstr", 6, gstring.AlignCenter).
 		Col("strFmt", 7, gstring.AlignCenter).
-		Col("gstring", 8, gstring.AlignCenter)
+		Col("gstring", 9, gstring.AlignCenter)
 	t.Header()
 
-	rows := [][]any{
+	matrix := [][]any{
 		{"Named {key} placeholders", "✗", "✓", "✓", "✓", "✓"},
 		{"Indexed {0} placeholders", "✓", "✓", "✗", "✓", "✗"},
 		{"Struct field access", "✓", "✓", "✗", "✗", "✓"},
 		{"Full Go fmt verb specs", "✓", "✓", "partial", "custom", "✓"},
 		{"{name=} debug syntax", "✗", "✗", "✓", "✗", "✗"},
 		{"Thousands sep {val:,.2f}", "✗", "✗", "✓", "✗", "✗"},
-		{"Table/Row alignment API", "✗", "✗", "✗", "✗", "✓"},
+		{"Table / Row alignment API", "✗", "✗", "✗", "✗", "✓"},
 		{"AutoWidth from data", "✗", "✗", "✗", "✗", "✓"},
 		{"ANSI color support", "✗", "✗", "✗", "✗", "✓"},
 		{"String utilities", "✗", "✗", "✗", "✗", "✓"},
-		{"Table.String() return", "✗", "✗", "✗", "✗", "✓"},
 		{"Template caching", "✗", "✗", "✗", "✗", "✓"},
 		{"Zero dependencies", "✓", "✓", "✓", "✓", "✓"},
-		{"Error on missing key", "panic", "error", "error", "error", "passthru"},
-		{"Relative perf vs fmt", "1x", "~2x", "~4x", "~1.2x", "~1.5x"},
+		{"Missing key behavior", "panic", "error", "error", "error", "passthru"},
 	}
 
-	for _, r := range rows {
+	for _, r := range matrix {
 		t.Row(r...)
 	}
 }
 
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
 func main() {
+	results := make(map[string]int64)
+
+	// Run examples and collect benchmark results inline
 	exampleFmt()
+	results["fmt_basic"] = bench(benchIterations, func() {
+		_ = fmt.Sprintf("Hello %s, your balance is %.2f", "Alice", 1234.5)
+	})
+	results["fmt_indexed"] = bench(benchIterations, func() {
+		_ = fmt.Sprintf("%[1]s (%[2]d) -> balance: %.2f", "Alice", 1, 1234.5)
+	})
+
 	examplePyfmt()
+	results["pyfmt_positional"] = bench(benchIterations, func() {
+		_, _ = pyfmt.Fmt("{} (id:{}) -> balance: {:.2f}", "Alice", 1, 1234.5)
+	})
+	results["pyfmt_named"] = bench(benchIterations, func() {
+		_, _ = pyfmt.Fmt("{name} -> {balance:.2f}",
+			map[string]any{"name": "Alice", "balance": 1234.5})
+	})
+	results["pyfmt_struct"] = bench(benchIterations, func() {
+		_, _ = pyfmt.Fmt("{Name} (id:{ID}) -> {Balance:.2f}", users[0])
+	})
+
 	exampleFstr()
+	results["fstr_named"] = bench(benchIterations, func() {
+		_ = fstr.Eval("{name} (id:{id}) -> balance: {balance:.2f}",
+			map[string]interface{}{"id": 1, "name": "Alice", "balance": 1234.5})
+	})
+	results["fstr_debug"] = bench(benchIterations, func() {
+		_ = fstr.Eval("{name=} {balance=:.2f}",
+			map[string]interface{}{"name": "Alice", "balance": 1234.5})
+	})
+
 	exampleStringFormatter()
-	exampleGstring()
+	results["sf_indexed"] = bench(benchIterations, func() {
+		_ = sf.Format("Hello {0}, balance: {1}", "Alice", 1234.5)
+	})
+	results["sf_named"] = bench(benchIterations, func() {
+		_ = sf.FormatComplex("{name} -> balance: {balance}",
+			map[string]any{"name": "Alice", "balance": 1234.5})
+	})
+
+	examplegstring()
+	results["gs_cold"] = bench(1, func() {
+		_ = gstring.Sprintf("cold:{name} {balance:.2f} {id}",
+			gstring.With("id", 1, "name", "Alice", "balance", 1234.5))
+	})
+	template := "{name} (id:{id:03d}) -> balance: {balance:.2f}"
+	args := gstring.With("id", 1, "name", "Alice", "balance", 1234.5)
+	_ = gstring.Sprintf(template, args) // prime cache
+	results["gs_warm"] = bench(benchIterations, func() {
+		_ = gstring.Sprintf(template, args)
+	})
+	results["gs_noop"] = bench(benchIterations, func() {
+		_ = gstring.Sprintf("no placeholders here", gstring.With())
+	})
+	results["gs_struct"] = bench(benchIterations, func() {
+		_ = gstring.Sprintf("{Name} (id:{ID:03d}) -> {Balance:.2f}", gstring.WithStruct(users[0]))
+	})
+	tableRows := [][]any{}
+	for _, u := range users {
+		tableRows = append(tableRows, []any{u.ID, u.Name, u.Balance, u.Active})
+	}
+	results["gs_table"] = bench(benchIterations, func() {
+		tb := gstring.NewTable()
+		tb.Col("ID", 5, gstring.AlignRight).
+			Col("Name", 12, gstring.AlignLeft).
+			Col("Balance", 12, gstring.AlignRight, 2).
+			Col("Active", 6, gstring.AlignLeft)
+		_ = tb.String(tableRows)
+	})
+
+	summaryTable(results)
 	featureMatrix()
 
 	fmt.Println()
 	fmt.Println(gstring.Repeat("─", 60))
-	fmt.Println(" Summary")
+	fmt.Println(" When to use each")
 	fmt.Println(gstring.Repeat("─", 60))
 	fmt.Println(`
-  Use fmt when:
-    - performance is critical (hot loops, high-throughput formatting)
-    - you want compile-time vet checks on format strings
-    - you need full verb coverage (%T, %p, %#v, etc.)
-
-  Use pyfmt when:
-    - you want Python .format() style with struct field access
-    - your team comes from a Python background
-
-  Use fstr when:
-    - you want {name=} debug output
-    - you need thousands separators ({val:,.2f})
-    - you're doing one-off script-style formatting
-
-  Use stringFormatter when:
-    - you want both indexed AND named in one lib
-    - you need SliceToString / MapToString helpers
-
-  Use gstring when:
-    - you're building CLI output, tables, or aligned reports
-    - you want to interpolate struct fields directly with WithStruct()
-    - you want AutoWidth so you never count column widths manually
-    - readability and maintainability matter more than raw speed
-    - you want a fluent table API with color support
-    - you need string utilities (Truncate, Wrap, Snake, Camel, etc.)
+  fmt          → hot loops, compile-time vet, full verb coverage
+  pyfmt        → Python-style with struct field access
+  fstr         → debug output {name=}, thousands separators
+  strFormatter → indexed + named in one lib, slice/map helpers
+  gstring     → CLI tables, aligned output, struct interpolation,
+                 AutoWidth, ANSI colors, string utilities
 	`)
 }
