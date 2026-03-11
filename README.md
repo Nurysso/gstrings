@@ -26,11 +26,11 @@ Other ecosystems solved this years ago. Python has f-strings. Rust has named for
 ## Install
 
 ```bash
-go get github.com/Nurysso/gstring
+go get github.com/nurysso/gstring
 ```
 
 ```go
-import "github.com/Nurysso/gstring"
+import "github.com/nurysso/gstring"
 ```
 
 ---
